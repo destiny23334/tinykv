@@ -6,6 +6,12 @@ import (
 	"tinykv/data"
 )
 
+type IndexerType uint8
+
+const (
+	BTreeIndexer IndexerType = iota // B树索引
+)
+
 // Indexer 作为一个索引所需要实现的接口
 type Indexer interface {
 	// Put 插入一个索引
@@ -16,6 +22,15 @@ type Indexer interface {
 
 	// Delete 删除索引
 	Delete(key []byte) bool
+}
+
+func NewIndexer(typ IndexerType) Indexer {
+	switch typ {
+	case BTreeIndexer:
+		return NewBTree()
+	default:
+		panic("Unsupported Type")
+	}
 }
 
 // Item key-value 需要实现比较

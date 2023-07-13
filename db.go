@@ -1,6 +1,12 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"tinykv/data"
 	"tinykv/index"
@@ -9,10 +15,45 @@ import (
 // DB tinykv存储实例
 type DB struct {
 	options    Options                   // 配置
+	fileIds    []int                     // 排好序的文件id，只能用于加载索引
 	lock       sync.RWMutex              // 同一时间只能有一个进程写数据库
 	activeFile *data.DataFile            // 活跃的那个文件
 	oldFiles   map[uint32]*data.DataFile // 旧的不活跃文件
 	indexer    index.Indexer             // 内存索引
+}
+
+func (options Options) Open() (*DB, error) {
+	// 检查一下配置是否合理
+	if err := checkOptions(options); err != nil {
+		return nil, err
+	}
+
+	//
+	if _, err := os.Stat(options.DirPath); os.IsNotExist(err) {
+		if err := os.Mkdir(options.DirPath, os.ModePerm); err != nil {
+			return nil, err
+		}
+	}
+
+	// 初始化
+	db := &DB{
+		options:    options,
+		lock:       sync.RWMutex{},
+		activeFile: nil,
+		oldFiles:   make(map[uint32]*data.DataFile),
+	}
+
+	// 加载数据
+	if err := db.loadDataFiles(); err != nil {
+		return nil, err
+	}
+
+	// 加载索引
+	if err := db.loadIndexerFromDataFile(); err != nil {
+		return nil, err
+	}
+
+	return db, nil
 }
 
 // Put 数据库中插入一条键值对
@@ -71,7 +112,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 
 	// 根据偏移量读取数据
-	record, err := dataFile.ReadLogRecord(pos.Offset)
+	record, _, err := dataFile.ReadLogRecord(pos.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -143,5 +184,92 @@ func (db *DB) setActiveDataFile() error {
 		return err
 	}
 	db.activeFile = dataFile
+	return nil
+}
+
+func checkOptions(options Options) error {
+	if options.DirPath == "" {
+		return errors.New("目录为空")
+	} else if options.DataFileSize <= 0 {
+		return errors.New("数据小了")
+	}
+	return nil
+}
+
+func (db *DB) loadDataFiles() error {
+	// 读出所有的文件
+	dirEntry, err := os.ReadDir(db.options.DirPath)
+	if err != nil {
+		return err
+	}
+
+	var fileIds []int // 不能用uint32，因为后面要排序
+	for _, entry := range dirEntry {
+		if strings.HasSuffix(entry.Name(), data.DataFileNameSuffix) {
+			names := strings.Split(entry.Name(), ".")
+			fileId, err := strconv.Atoi(names[0])
+			if err != nil {
+				return err
+			}
+			fileIds = append(fileIds, fileId)
+		}
+	}
+
+	sort.Ints(fileIds)
+	db.fileIds = fileIds
+
+	for i, fileId := range fileIds {
+		dataFile, err := data.OpenDataFile(db.options.DirPath, uint32(fileId))
+		if err != nil {
+			return err
+		}
+		if i == len(fileIds)-1 {
+			db.activeFile = dataFile
+		} else {
+			db.oldFiles[uint32(fileId)] = dataFile
+		}
+	}
+	return nil
+
+}
+
+func (db *DB) loadIndexerFromDataFile() error {
+	// 空数据库
+	if len(db.fileIds) == 0 {
+		return nil
+	}
+
+	// 遍历所有文件，取出内容
+	for i, fileId := range db.fileIds {
+		fid := uint32(fileId)
+		var dataFile *data.DataFile
+		if fid == db.activeFile.FileId {
+			dataFile = db.activeFile
+		} else {
+			dataFile = db.oldFiles[fid]
+		}
+
+		var offset int64 = 0
+		for {
+			record, n, err := dataFile.ReadLogRecord(offset)
+			if err != nil {
+				if err != io.EOF {
+					break
+				}
+				return err
+			}
+			logRecordPos := &data.LogRecordPos{Fid: fid, Offset: offset}
+			if record.Type == data.LogRecordDelete {
+				db.indexer.Delete(record.Key)
+			} else {
+				db.indexer.Put(record.Key, logRecordPos)
+			}
+			offset += n
+		}
+
+		if i == len(db.fileIds)-1 {
+			db.activeFile.Offset = offset
+		}
+	}
 	return nil
 }
