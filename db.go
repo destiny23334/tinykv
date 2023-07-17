@@ -122,6 +122,28 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	return record.Value, nil
 }
 
+func (db *DB) Delete(key []byte) error {
+	if len(key) == 0 {
+		return ErrorEmptyKey
+	}
+
+	// 先看内存有没有这个key
+	if pos := db.indexer.Get(key); pos == nil {
+		return ErrorKeyNotFound
+	}
+
+	// 再写到文件数据中
+	logRecord := &data.LogRecord{
+		Key:  key,
+		Type: data.LogRecordDelete, // 不需要value
+	}
+	_, err := db.appendLogRecord(logRecord)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // 将插入的键值对追加到磁盘文件中
 func (db *DB) appendLogRecord(record *data.LogRecord) (*data.LogRecordPos, error) {
 	db.lock.Lock()
