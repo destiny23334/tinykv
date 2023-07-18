@@ -16,4 +16,10 @@ type IOManager interface {
 
 	// Close 关闭IO
 	Close() error
+
+	Size() (int64, error)
+}
+
+func NewIOManager(fileName string) (IOManager, error) {
+	return NewFileIOManager(fileName)
 }

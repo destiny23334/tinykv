@@ -7,4 +7,6 @@ var (
 	ErrorIndexerUpdateFailed = errors.New("update index failed")
 	ErrorKeyNotFound         = errors.New("key not found")
 	ErrorFileNotFound        = errors.New("file not found")
+
+	ErrorInvalidCRC = errors.New("invalid crc check")
 )
